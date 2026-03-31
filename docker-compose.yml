@@ -1,0 +1,235 @@
+# =============================================================================
+# Docker Compose — Energy Fraud Detection Stack (fixed image tags)
+# =============================================================================
+# All images verified available on Docker Hub as of 2026:
+#   - confluentinc/cp-zookeeper:7.5.3
+#   - confluentinc/cp-kafka:7.5.3
+#   - apache/hadoop:3          (replaces bde2020/hadoop-*)
+#   - apache/hive:4.0.0        (replaces bde2020/hive)
+#   - bitnami/spark:latest
+#   - postgres:15-alpine
+# =============================================================================
+
+networks:
+  fraud_net:
+    driver: bridge
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  postgres_data:
+
+services:
+
+  # ── Zookeeper ───────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.3
+    container_name: zookeeper
+    networks: [fraud_net]
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      retries: 5
+
+  # ── Kafka ───────────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.3
+    container_name: kafka
+    networks: [fraud_net]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 15s
+      retries: 10
+
+  # ── Kafka topic initialiser ─────────────────────────────────────────────────
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.3
+    container_name: kafka-init
+    networks: [fraud_net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: ["/bin/sh", "-lc", "exec kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic energy_readings --partitions 3 --replication-factor 1 && echo 'Topic created.'"]
+    restart: "no"
+
+  # ── HDFS Namenode ───────────────────────────────────────────────────────────
+  namenode:
+    image: apache/hadoop:3
+    container_name: namenode
+    networks: [fraud_net]
+    hostname: namenode
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    user: root
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+      - ./hadoop-config/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml
+      - ./hadoop-config/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml
+    command: ["/bin/bash", "-c", "mkdir -p /hadoop/dfs/name /hadoop/dfs/data && chown -R hadoop:users /hadoop && su hadoop -c 'if [ ! -d /hadoop/dfs/name/current ]; then hdfs namenode -format -force -nonInteractive; fi && hdfs namenode'"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9870 || exit 1"]
+      interval: 15s
+      retries: 10
+
+  # ── HDFS Datanode ───────────────────────────────────────────────────────────
+  datanode:
+    image: apache/hadoop:3
+    container_name: datanode
+    networks: [fraud_net]
+    hostname: datanode
+    user: root
+    depends_on:
+      namenode:
+        condition: service_healthy
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+      - ./hadoop-config/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml
+      - ./hadoop-config/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml
+    command: ["/bin/bash", "-c", "mkdir -p /hadoop/dfs/data && chown -R hadoop:users /hadoop && su hadoop -c 'hdfs datanode'"]
+
+  # ── HDFS directory initialiser ─────────────────────────────────────────────
+  hdfs-init:
+    image: apache/hadoop:3
+    container_name: hdfs-init
+    networks: [fraud_net]
+    depends_on:
+      namenode:
+        condition: service_healthy
+    volumes:
+      - ./hadoop-config/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml
+    command: ["/bin/bash", "-lc", "sleep 10 && hdfs dfs -mkdir -p hdfs://namenode:9000/data/energy/raw && hdfs dfs -mkdir -p hdfs://namenode:9000/data/energy/processed && hdfs dfs -mkdir -p hdfs://namenode:9000/data/energy/alerts && hdfs dfs -mkdir -p hdfs://namenode:9000/checkpoints/raw && hdfs dfs -mkdir -p hdfs://namenode:9000/checkpoints/processed && hdfs dfs -mkdir -p hdfs://namenode:9000/checkpoints/alerts && hdfs dfs -mkdir -p hdfs://namenode:9000/user/hive/warehouse && hdfs dfs -chmod -R 777 hdfs://namenode:9000/data && hdfs dfs -chmod -R 777 hdfs://namenode:9000/checkpoints && hdfs dfs -chmod -R 777 hdfs://namenode:9000/user && echo 'HDFS ready.'"]
+    restart: "no"
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    networks: [fraud_net]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: metastore
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hivepassword
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive -d metastore"]
+      interval: 10s
+      retries: 5
+
+  # ── Hive Metastore ───────────────────────────────────────────────────────────
+  hive-metastore:
+    build:
+      context: ./hive
+    container_name: hive-metastore
+    networks: [fraud_net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
+    ports:
+      - "9083:9083"
+    volumes:
+      - ./hadoop-config/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml
+    environment:
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      SERVICE_OPTS: "-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/metastore -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=hivepassword"
+
+  # ── HiveServer2 ──────────────────────────────────────────────────────────────
+  hive-server:
+    build:
+      context: ./hive
+    container_name: hive-server
+    networks: [fraud_net]
+    depends_on: [hive-metastore]
+    ports:
+      - "10000:10000"
+      - "10002:10002"
+    volumes:
+      - ./hadoop-config/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml
+      - ./hive:/hive_scripts
+    environment:
+      SERVICE_NAME: hiveserver2
+      IS_RESUME: "true"
+      SERVICE_OPTS: "-Dhive.metastore.uris=thrift://hive-metastore:9083"
+
+  # ── Spark Master ─────────────────────────────────────────────────────────────
+  spark-master:
+    image: apache/spark:3.4.0
+    container_name: spark-master
+    networks: [fraud_net]
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+
+  # ── Spark Worker ─────────────────────────────────────────────────────────────
+  spark-worker:
+    image: apache/spark:3.4.0
+    container_name: spark-worker
+    networks: [fraud_net]
+    depends_on: [spark-master]
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    environment:
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+
+  # ── Spark Streaming Job ───────────────────────────────────────────────────────
+  spark-job:
+    image: apache/spark:3.4.0
+    container_name: spark-job
+    networks: [fraud_net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
+      hdfs-init:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./spark:/app/spark
+      - ./hadoop-config/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - "pip install --quiet kafka-python && /opt/spark/bin/spark-submit --master spark://spark-master:7077 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0 --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 --conf spark.sql.warehouse.dir=hdfs://namenode:9000/user/hive/warehouse /app/spark/spark_streaming_job.py"
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - HDFS_NAMENODE=hdfs://namenode:9000
+
+  # ── Smart Meter Simulator ─────────────────────────────────────────────────────
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: simulator
+    networks: [fraud_net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      - KAFKA_BROKER=kafka:9092
+    restart: unless-stopped
