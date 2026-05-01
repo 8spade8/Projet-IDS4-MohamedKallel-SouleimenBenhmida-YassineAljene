@@ -33,11 +33,23 @@ PALETTE = sns.color_palette("Set2")
 # ── Hive Connection ────────────────────────────────────────────────────────────
 
 def get_hive_connection():
-    return hive.Connection(host=HIVE_HOST, port=HIVE_PORT, database=HIVE_DB)
+    conn = hive.Connection(host=HIVE_HOST, port=HIVE_PORT, database=HIVE_DB)
+    cursor = conn.cursor()
+    cursor.execute("set hive.vectorized.execution.enabled=false")
+    cursor.execute("set hive.vectorized.execution.reduce.enabled=false")
+    cursor.close()
+    return conn
 
 
 def run_query(conn, sql):
-    return pd.read_sql(sql, conn)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        columns = [col[0] for col in cursor.description]
+        return pd.DataFrame(rows, columns=columns)
+    finally:
+        cursor.close()
 
 
 # ── Queries ────────────────────────────────────────────────────────────────────
@@ -74,17 +86,18 @@ ORDER BY hour
 """
 
 SQL_DAILY_TREND = """
-SELECT date,
+SELECT `date` AS event_date,
        ROUND(AVG(consumption_kwh), 4) AS daily_avg_kwh,
        SUM(CAST(is_fraud_flagged AS INT)) AS daily_fraud_count
 FROM meter_features
-GROUP BY date
-ORDER BY date
+GROUP BY `date`
+ORDER BY `date`
 """
 
 SQL_SEVERITY_DIST = """
 SELECT fraud_severity, COUNT(*) AS count
-FROM fraud_alerts
+FROM meter_features
+WHERE is_fraud_flagged = TRUE
 GROUP BY fraud_severity
 """
 
@@ -143,12 +156,12 @@ def plot_rule_contributions(df_summary, ax):
 
 
 def plot_daily_trend(df_daily, ax):
-    ax.plot(df_daily["date"], df_daily["daily_avg_kwh"],
+    ax.plot(df_daily["event_date"], df_daily["daily_avg_kwh"],
             color="#3498db", linewidth=1.5, label="Daily avg kWh")
-    ax.fill_between(df_daily["date"], df_daily["daily_avg_kwh"],
+    ax.fill_between(df_daily["event_date"], df_daily["daily_avg_kwh"],
                     alpha=0.15, color="#3498db")
     ax2 = ax.twinx()
-    ax2.bar(df_daily["date"], df_daily["daily_fraud_count"],
+    ax2.bar(df_daily["event_date"], df_daily["daily_fraud_count"],
             color="#e74c3c", alpha=0.4, label="Fraud alerts")
     ax.set_xlabel("Date")
     ax.set_ylabel("Avg kWh", color="#3498db")

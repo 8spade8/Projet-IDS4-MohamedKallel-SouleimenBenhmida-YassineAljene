@@ -178,7 +178,7 @@ services:
     container_name: spark-master
     networks: [fraud_net]
     ports:
-      - "8080:8080"
+      - "18080:8080"
       - "7077:7077"
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
 
@@ -232,4 +232,27 @@ services:
         condition: service_completed_successfully
     environment:
       - KAFKA_BROKER=kafka:9092
+    restart: unless-stopped
+
+  # Live Streamlit dashboard
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: dashboard
+    networks: [fraud_net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      simulator:
+        condition: service_started
+    ports:
+      - "8501:8501"
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC=energy_readings
+      - DASHBOARD_MAX_MESSAGES=2500
+      - DASHBOARD_REFRESH_MS=3000
     restart: unless-stopped

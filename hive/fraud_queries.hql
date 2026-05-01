@@ -7,6 +7,9 @@
 
 USE energy_fraud;
 
+SET hive.vectorized.execution.enabled=false;
+SET hive.vectorized.execution.reduce.enabled=false;
+
 
 -- =============================================================================
 -- SECTION 1 — Overview / Sanity Checks
@@ -14,15 +17,15 @@ USE energy_fraud;
 
 -- Q1.1: Count total readings and flagged readings per day
 SELECT
-    date,
+    `date`,
     COUNT(*)                                              AS total_readings,
     SUM(CAST(is_fraud_flagged AS INT))                   AS fraud_count,
     ROUND(
         SUM(CAST(is_fraud_flagged AS INT)) * 100.0 / COUNT(*), 2
     )                                                    AS fraud_rate_pct
 FROM meter_features
-GROUP BY date
-ORDER BY date DESC;
+GROUP BY `date`
+ORDER BY `date` DESC;
 
 
 -- Q1.2: Overview by meter — total readings, fraud count, fraud rate
@@ -111,7 +114,7 @@ ORDER BY meter_id, hour;
 -- Compare today's total vs yesterday's total
 SELECT
     a.meter_id,
-    a.date                                    AS today,
+    a.`date`                                  AS today,
     ROUND(SUM(a.consumption_kwh), 3)          AS today_kwh,
     ROUND(SUM(b.consumption_kwh), 3)          AS yesterday_kwh,
     ROUND(
@@ -121,8 +124,8 @@ SELECT
 FROM raw_readings a
 LEFT JOIN raw_readings b
     ON  a.meter_id = b.meter_id
-    AND DATE_SUB(a.date, 1) = b.date
-GROUP BY a.meter_id, a.date
+    AND DATE_SUB(a.`date`, 1) = b.`date`
+GROUP BY a.meter_id, a.`date`
 HAVING ABS(change_pct) > 30    -- flag >30% day-on-day change
 ORDER BY ABS(change_pct) DESC;
 
@@ -231,9 +234,10 @@ SELECT
     SUM(rules_fired_count)            AS total_rules_fired,
     ROUND(AVG(rules_fired_count), 2)  AS avg_rules_per_alert,
     MAX(fraud_severity)               AS max_severity,
-    MIN(date)                         AS first_alert_date,
-    MAX(date)                         AS last_alert_date
-FROM fraud_alerts
+    MIN(`date`)                       AS first_alert_date,
+    MAX(`date`)                       AS last_alert_date
+FROM meter_features
+WHERE is_fraud_flagged = TRUE
 GROUP BY meter_id, location
 ORDER BY alert_count DESC;
 
@@ -244,7 +248,8 @@ SELECT
     COUNT(*)                          AS alert_count,
     ROUND(AVG(consumption_kwh), 3)    AS avg_kwh_at_alert,
     ROUND(AVG(voltage_v), 2)          AS avg_voltage_at_alert
-FROM fraud_alerts
+FROM meter_features
+WHERE is_fraud_flagged = TRUE
 GROUP BY hour
 ORDER BY hour;
 
@@ -254,7 +259,8 @@ SELECT
     fraud_severity,
     COUNT(*)                          AS count,
     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS pct
-FROM fraud_alerts
+FROM meter_features
+WHERE is_fraud_flagged = TRUE
 GROUP BY fraud_severity
 ORDER BY
     CASE fraud_severity

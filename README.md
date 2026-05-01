@@ -85,11 +85,12 @@ docker logs -f hive-metastore
 | Service | Local URL / Port |
 |---------|------------------|
 | HDFS NameNode UI | http://localhost:9870 |
+| Live Streamlit Dashboard | http://localhost:8501 |
 | HDFS RPC | hdfs://namenode:9000 |
 | Kafka broker | localhost:9092 |
 | Hive Metastore | localhost:9083 |
 | HiveServer2 | localhost:10000 |
-| Spark Master UI | http://localhost:8080 |
+| Spark Master UI | http://localhost:18080 |
 | Spark Master RPC | spark://spark-master:7077 |
 
 ## Result verification
@@ -107,7 +108,8 @@ docker logs -f hive-metastore
 ## Inspect results
 
 - Use HDFS NameNode UI: `http://localhost:9870`
-- Use Spark UI: `http://localhost:8080`
+- Use live fraud dashboard: `http://localhost:8501`
+- Use Spark UI: `http://localhost:18080`
 - Query Hive via Beeline or JDBC on `localhost:10000`
 - Tail simulator logs:
   ```bash

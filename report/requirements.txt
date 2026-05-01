@@ -1,0 +1,7 @@
+pandas
+matplotlib
+seaborn
+PyHive
+thrift
+thrift-sasl
+pure-sasl
